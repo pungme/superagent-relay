@@ -1,0 +1,15 @@
+name = "superagent-relay"
+main = "src/worker.ts"
+compatibility_date = "2025-08-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "MachineRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MachineRoom"]
+
+# Secrets (set with `wrangler secret put`): APNS_KEY (the .p8 PEM), APNS_KEY_ID,
+# APNS_TEAM_ID, APNS_BUNDLE_ID. Without them the relay still relays; only push
+# is disabled.

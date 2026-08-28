@@ -1,0 +1,29 @@
+{
+  "name": "superagent-relay",
+  "version": "0.1.0",
+  "description": "Blind relay between SuperAgent desktop and its phone companion. Forwards ciphertext, stores nothing.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/node.js",
+  "scripts": {
+    "dev": "tsx src/node.ts",
+    "start": "node dist/node.js",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260828.1",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
