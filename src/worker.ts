@@ -95,9 +95,9 @@ export class MachineRoom extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const room = this.ensureRoom(this.machineId)
+    const att = ws.deserializeAttachment() as Attachment | null
     if (!room) return
     const text = typeof message === 'string' ? message : new TextDecoder().decode(message)
-    const att = ws.deserializeAttachment() as Attachment | null
     if (!att) return
     if (att.role === 'machine') await room.machineFrame(wrap(ws), text)
     else if (att.clientId) room.clientFrame(att.clientId, text)
@@ -130,8 +130,8 @@ function wrap(ws: WebSocket): Socket {
       send: (text) => {
         try {
           ws.send(text)
-        } catch {
-          /* already closed */
+        } catch (e) {
+          console.log(`[room] send failed readyState=${ws.readyState}: ${(e as Error).message}`)
         }
       },
       close: (code, reason) => {

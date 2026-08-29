@@ -19,6 +19,8 @@ npm install && npm run build && PORT=8787 npm start
 
 Health: `GET /healthz`. That's the whole thing — no database, no config required.
 
+Smoke-test any running relay (either host): `npm run smoke -- ws://127.0.0.1:8787`.
+
 **Push notifications** (optional): give the relay an APNs key and it can wake phones when the
 agent needs you. Set `APNS_KEY` (the `.p8` contents), `APNS_KEY_ID`, `APNS_TEAM_ID`,
 `APNS_BUNDLE_ID`. Without them everything still works while the app is open.

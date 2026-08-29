@@ -10,6 +10,7 @@
     "start": "node dist/node.js",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "smoke": "node test/live.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
     "worker:dev": "wrangler dev",
     "worker:deploy": "wrangler deploy"
