@@ -42,8 +42,18 @@ export class MachineRoom extends DurableObject<Env> {
   private room: Room | null = null
   private machineId = ''
 
-  private ensureRoom(machineId: string): Room | null {
+  /**
+   * The machine this object serves. The object is created by
+   * idFromName(machineId), so the name survives every eviction — a fresh
+   * instance must not depend on having seen the original request.
+   */
+  private machineIdFor(hint?: string): string {
+    return this.machineId || hint || this.ctx.id.name || ''
+  }
+
+  private ensureRoom(hint?: string): Room | null {
     if (this.room) return this.room
+    const machineId = this.machineIdFor(hint)
     const key = machineIdToKey(machineId)
     if (!key) return null
     this.machineId = machineId
@@ -105,7 +115,7 @@ export class MachineRoom extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    const room = this.ensureRoom(this.machineId)
+    const room = this.ensureRoom()
     const att = ws.deserializeAttachment() as Attachment | null
     if (!room) return
     const text = typeof message === 'string' ? message : new TextDecoder().decode(message)
@@ -121,7 +131,8 @@ export class MachineRoom extends DurableObject<Env> {
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
-    const room = this.room
+    // Even on a cold instance: the Mac must hear that its phone left.
+    const room = this.ensureRoom()
     if (!room) return
     const att = ws.deserializeAttachment() as Attachment | null
     if (!att) return
@@ -134,7 +145,7 @@ export class MachineRoom extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    this.room?.expirePendingAuth()
+    this.ensureRoom()?.expirePendingAuth()
   }
 }
 
