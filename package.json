@@ -1,7 +1,7 @@
 {
   "name": "superagent-relay",
   "version": "0.1.0",
-  "description": "Blind relay between SuperAgent desktop and its phone companion. Forwards ciphertext, stores nothing.",
+  "description": "Blind relay between Superagent desktop and its phone companion. Forwards ciphertext, stores nothing.",
   "license": "MIT",
   "type": "module",
   "main": "dist/node.js",

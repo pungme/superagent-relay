@@ -1,12 +1,12 @@
 # superagent-relay
 
-The meeting point between [SuperAgent desktop](https://github.com/pungme/superagent-desktop) and
+The meeting point between [Superagent desktop](https://github.com/pungme/superagent-desktop) and
 its iPhone app. Both sides dial **out** to it, so it works from anywhere without touching a router.
 It forwards end-to-end-encrypted frames and stores nothing — it can't read a message even if it
 wanted to. The only thing it can do on its own is send an Apple push notification when the Mac
 asks it to.
 
-SuperAgent ships with a default relay baked in (`wss://superagent-relay.superagent-relay.workers.dev`, this code on Cloudflare). Run your own if you'd rather; it's one URL to change
+Superagent ships with a default relay baked in (`wss://superagent-relay.superagent-relay.workers.dev`, this code on Cloudflare). Run your own if you'd rather; it's one URL to change
 on the Mac (Settings → Phone) and the phone picks it up from the pairing QR.
 
 ## Self-host
