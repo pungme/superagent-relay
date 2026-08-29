@@ -6,7 +6,7 @@ It forwards end-to-end-encrypted frames and stores nothing — it can't read a m
 wanted to. The only thing it can do on its own is send an Apple push notification when the Mac
 asks it to.
 
-SuperAgent ships with a default relay baked in. Run your own if you'd rather; it's one URL to change
+SuperAgent ships with a default relay baked in (`wss://superagent-relay.superagent-relay.workers.dev`, this code on Cloudflare). Run your own if you'd rather; it's one URL to change
 on the Mac (Settings → Phone) and the phone picks it up from the pairing QR.
 
 ## Self-host
