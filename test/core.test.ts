@@ -143,6 +143,21 @@ describe('Room', () => {
     expect(m2.last()).toEqual({ t: 'close', c: id })
   })
 
+  it('adopts surviving sockets after a host rebuild without a new challenge', async () => {
+    const room = new Room(machineId, machineIdToKey(machineId)!, hooks)
+    const mac = new FakeSocket()
+    const phone = new FakeSocket()
+    room.adoptMachine(mac)
+    room.adoptClient('c7', phone)
+    expect(room.hasMachine).toBe(true)
+    expect(room.isMachine(mac)).toBe(true)
+    room.clientFrame('c7', 'X')
+    expect(mac.last()).toEqual({ t: 'msg', c: 'c7', d: 'X' })
+    // Fresh client ids continue past the adopted ones.
+    const next = new FakeSocket()
+    expect(room.clientConnected(next)).toBe('c8')
+  })
+
   it('ignores a machine that talks before authenticating', async () => {
     const room = new Room(machineId, machineIdToKey(machineId)!, hooks)
     const stranger = new FakeSocket()

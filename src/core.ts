@@ -178,6 +178,26 @@ export class Room {
     for (const c of this.clients.values()) this.mac.send(JSON.stringify({ t: 'open', c: c.id }))
   }
 
+  /** True if this socket is the authenticated machine. */
+  isMachine(socket: Socket): boolean {
+    return this.mac === socket
+  }
+
+  /**
+   * Re-attach sockets that outlived the Room (a hibernating host rebuilt it).
+   * No challenge: the host only adopts a machine it recorded as authenticated.
+   */
+  adoptMachine(socket: Socket): void {
+    if (this.mac && this.mac !== socket) this.mac.close(CLOSE.replaced, 'replaced by a newer connection')
+    this.mac = socket
+  }
+
+  adoptClient(id: string, socket: Socket): void {
+    this.clients.set(id, { id, socket })
+    const n = Number(id.slice(1))
+    if (Number.isFinite(n) && n >= this.nextClient) this.nextClient = n + 1
+  }
+
   machineClosed(socket: Socket): void {
     if (this.pendingMac?.socket === socket) this.pendingMac = null
     if (this.mac !== socket) return

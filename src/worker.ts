@@ -34,6 +34,8 @@ export default {
 interface Attachment {
   role: 'machine' | 'client'
   clientId?: string
+  /** Set once the machine's signature checked out; survives hibernation. */
+  authed?: boolean
 }
 
 export class MachineRoom extends DurableObject<Env> {
@@ -57,15 +59,24 @@ export class MachineRoom extends DurableObject<Env> {
       push: cfg ? makePusherWith(cfg, crypto.subtle, (u, i) => fetch(u, i)) : undefined
     }
     this.room = new Room(machineId, key, hooks)
-    // Sockets that survived hibernation re-attach to the fresh Room.
+    // Sockets that outlived the object (hibernation) re-attach to the fresh
+    // Room from their attachments — the machine without a new challenge, since
+    // it was recorded as authenticated when it passed the first one.
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() as Attachment | null
       if (!att) continue
       if (att.role === 'machine') {
-        // The machine has to prove itself again after a hibernation wake.
-        ws.close(CLOSE.replaced, 'relay restarted, reconnect')
-      } else {
-        ws.close(CLOSE.machineGone, 'relay restarted, reconnect')
+        if (att.authed) this.room.adoptMachine(wrap(ws))
+        else ws.close(CLOSE.unauthorized, 'auth interrupted, reconnect')
+      } else if (att.clientId) {
+        this.room.adoptClient(att.clientId, wrap(ws))
+      }
+    }
+    // Clients that were attached while no machine survived get the honest answer.
+    if (!this.room.hasMachine) {
+      for (const ws of this.ctx.getWebSockets()) {
+        const att = ws.deserializeAttachment() as Attachment | null
+        if (att?.role === 'client') ws.close(CLOSE.machineGone, 'machine disconnected')
       }
     }
     return this.room
@@ -99,8 +110,14 @@ export class MachineRoom extends DurableObject<Env> {
     if (!room) return
     const text = typeof message === 'string' ? message : new TextDecoder().decode(message)
     if (!att) return
-    if (att.role === 'machine') await room.machineFrame(wrap(ws), text)
-    else if (att.clientId) room.clientFrame(att.clientId, text)
+    if (att.role === 'machine') {
+      const sock = wrap(ws)
+      await room.machineFrame(sock, text)
+      // Remember a successful auth on the socket itself, for the next wake.
+      if (!att.authed && room.isMachine(sock)) {
+        ws.serializeAttachment({ role: 'machine', authed: true } satisfies Attachment)
+      }
+    } else if (att.clientId) room.clientFrame(att.clientId, text)
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
