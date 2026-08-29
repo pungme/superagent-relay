@@ -122,6 +122,9 @@ export class MachineRoom extends DurableObject<Env> {
     if (!att) return
     if (att.role === 'machine') {
       const sock = wrap(ws)
+      // The attachment, not object identity, says who the machine is: after a
+      // wake the runtime may hand us a different JS object for the same socket.
+      if (att.authed && !room.isMachine(sock)) room.adoptMachine(sock)
       await room.machineFrame(sock, text)
       // Remember a successful auth on the socket itself, for the next wake.
       if (!att.authed && room.isMachine(sock)) {

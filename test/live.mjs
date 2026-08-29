@@ -35,6 +35,8 @@ const wait = (ws, pred = () => true) =>
   })
 const closed = (ws) => new Promise((r) => ws.addEventListener('close', (e) => r(e.code), { once: true }))
 
+process.on('uncaughtException', (e) => { console.log('FAIL crashed: ' + e.message); process.exit(2) })
+process.on('unhandledRejection', (e) => { console.log('FAIL rejected: ' + (e && e.message)); process.exit(2) })
 let failures = 0
 const check = (name, ok) => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}`)
@@ -72,6 +74,29 @@ mac.send(JSON.stringify({ t: 'msg', c: open.c, d: 'CIPHERTEXT-FROM-MAC' }))
 check('machine → phone verbatim', (await wait(phone)) === 'CIPHERTEXT-FROM-MAC')
 mac.send('{"t":"ping"}')
 check('ping/pong', (await wait(mac, (t) => t.includes('pong'))) === '{"t":"pong"}')
+
+// 4b. optional: idle long enough for a hosted relay to evict its object, then pipe again.
+const idle = Number((process.argv.find((a) => /^\d+$/.test(a) && a !== process.argv[1]) ?? 0))
+if (idle > 0) {
+  // Real clients ping every 25 s; --quiet idles in complete silence instead.
+  const quiet = process.argv.includes('--quiet')
+  console.log(`idle ${idle}s${quiet ? ' in silence' : ' with pings'} (letting the host evict the room)…`)
+  const started = Date.now()
+  while (Date.now() - started < idle * 1000) {
+    await new Promise((r) => setTimeout(r, 25_000))
+    if (!quiet) {
+      mac.send('{"t":"ping"}')
+      phone.send('PING-FROM-PHONE') // the Mac would answer inside the ciphertext; here it just proves delivery
+      const f = await wait(mac, (t) => t.includes('PING-FROM-PHONE')).catch((e) => 'ERR ' + e.message)
+      if (typeof f === 'string' && f.startsWith('ERR')) { check('phone ping delivered during idle', false); break }
+    }
+  }
+  phone.send('AFTER-IDLE-FROM-PHONE')
+  const late = JSON.parse(await wait(mac, (t) => t.includes('AFTER-IDLE')))
+  check('phone → machine after idle', late.d === 'AFTER-IDLE-FROM-PHONE')
+  mac.send(JSON.stringify({ t: 'msg', c: open.c, d: 'AFTER-IDLE-FROM-MAC' }))
+  check('machine → phone after idle', (await wait(phone)) === 'AFTER-IDLE-FROM-MAC')
+}
 
 // 5. machine leaves → phone dropped with 4410
 const phoneClose = closed(phone)
