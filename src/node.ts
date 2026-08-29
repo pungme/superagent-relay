@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage } from 'node:http'
 import { createPublicKey, randomBytes, verify as edVerify } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
-import { Room, route, machineIdToKey, CLOSE, LIMITS, type Socket, type RoomHooks } from './core.js'
+import { Room, route, machineIdToKey, isAllowed, CLOSE, LIMITS, type Socket, type RoomHooks } from './core.js'
 import { makePusher } from './push.js'
 
 /**
@@ -80,7 +80,15 @@ export function startRelay(port = Number(process.env.PORT ?? 8787)): ReturnType<
       socket.destroy()
       return
     }
-    wss.handleUpgrade(req, socket, head, (ws) => attach(ws, target.role, target.machineId))
+    if (!isAllowed(target.machineId, process.env.RELAY_ALLOWED_MACHINES)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    // Behind a proxy the real address is in X-Forwarded-For; otherwise the socket's.
+    const fwd = req.headers['x-forwarded-for']
+    const address = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0].trim() || req.socket.remoteAddress || undefined
+    wss.handleUpgrade(req, socket, head, (ws) => attach(ws, target.role, target.machineId, address))
   })
 
   // Liveness: ws-level ping every 30 s; a socket that never pongs is dropped.
@@ -98,7 +106,7 @@ export function startRelay(port = Number(process.env.PORT ?? 8787)): ReturnType<
   }, 30_000)
   sweep.unref()
 
-  function attach(ws: WebSocket, role: 'machine' | 'client', machineId: string): void {
+  function attach(ws: WebSocket, role: 'machine' | 'client', machineId: string, address?: string): void {
     const room = roomFor(machineId)
     if (!room) {
       ws.close(CLOSE.protocol, 'bad machine id')
@@ -116,7 +124,7 @@ export function startRelay(port = Number(process.env.PORT ?? 8787)): ReturnType<
       ws.on('error', () => room.machineClosed(sock))
       return
     }
-    const id = room.clientConnected(sock)
+    const id = room.clientConnected(sock, address)
     if (!id) return
     ws.on('message', (data) => room.clientFrame(id, data.toString()))
     ws.on('close', () => room.clientClosed(id))

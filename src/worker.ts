@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
-import { Room, route, machineIdToKey, CLOSE, type Socket, type RoomHooks } from './core'
+import { Room, route, machineIdToKey, isAllowed, CLOSE, type Socket, type RoomHooks, type Quota } from './core'
 import { makePusherWith, readPushConfig } from './push'
 
 /**
@@ -13,6 +13,8 @@ export interface Env {
   APNS_KEY_ID?: string
   APNS_TEAM_ID?: string
   APNS_BUNDLE_ID?: string
+  /** Optional: only these machine ids (or ≥8-char prefixes) may use this relay. */
+  RELAY_ALLOWED_MACHINES?: string
 }
 
 export default {
@@ -23,6 +25,9 @@ export default {
     }
     const target = route(url.pathname)
     if (!target) return new Response('not found', { status: 404 })
+    if (!isAllowed(target.machineId, env.RELAY_ALLOWED_MACHINES)) {
+      return new Response('this relay only serves machines on its allowlist', { status: 403 })
+    }
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('expected websocket', { status: 426 })
     }
@@ -36,11 +41,14 @@ interface Attachment {
   clientId?: string
   /** Set once the machine's signature checked out; survives hibernation. */
   authed?: boolean
+  /** The phone's address, for the per-address cap after a rebuild. */
+  address?: string
 }
 
 export class MachineRoom extends DurableObject<Env> {
   private room: Room | null = null
   private machineId = ''
+  private quotaLoaded = false
 
   /**
    * The machine this object serves. The object is created by
@@ -66,7 +74,9 @@ export class MachineRoom extends DurableObject<Env> {
       },
       randomNonce: () => crypto.getRandomValues(new Uint8Array(new ArrayBuffer(32))),
       now: () => Date.now(),
-      push: cfg ? makePusherWith(cfg, crypto.subtle, (u, i) => fetch(u, i)) : undefined
+      push: cfg ? makePusherWith(cfg, crypto.subtle, (u, i) => fetch(u, i)) : undefined,
+      // Once per MB, so a day's count survives eviction without a write per frame.
+      saveQuota: (q) => void this.ctx.storage.put('quota', q)
     }
     this.room = new Room(machineId, key, hooks)
     // Sockets that outlived the object (hibernation) re-attach to the fresh
@@ -79,7 +89,7 @@ export class MachineRoom extends DurableObject<Env> {
         if (att.authed) this.room.adoptMachine(wrap(ws))
         else ws.close(CLOSE.unauthorized, 'auth interrupted, reconnect')
       } else if (att.clientId) {
-        this.room.adoptClient(att.clientId, wrap(ws))
+        this.room.adoptClient(att.clientId, wrap(ws), att.address)
       }
     }
     // Clients that were attached while no machine survived get the honest answer.
@@ -92,11 +102,20 @@ export class MachineRoom extends DurableObject<Env> {
     return this.room
   }
 
+  /** Today's byte count, read once per object lifetime before any frame is charged. */
+  private async hydrate(room: Room): Promise<void> {
+    if (this.quotaLoaded) return
+    this.quotaLoaded = true
+    room.restoreQuota((await this.ctx.storage.get<Quota>('quota')) ?? null)
+  }
+
   async fetch(request: Request): Promise<Response> {
     const target = route(new URL(request.url).pathname)
     if (!target) return new Response('not found', { status: 404 })
     const room = this.ensureRoom(target.machineId)
     if (!room) return new Response('bad machine id', { status: 400 })
+    await this.hydrate(room)
+    const address = request.headers.get('CF-Connecting-IP') ?? undefined
 
     const pair = new WebSocketPair()
     const [client, server] = [pair[0], pair[1]]
@@ -108,8 +127,8 @@ export class MachineRoom extends DurableObject<Env> {
       // Auth deadline: alarms are the hibernation-safe timer.
       await this.ctx.storage.setAlarm(Date.now() + 11_000)
     } else {
-      const id = room.clientConnected(sock)
-      if (id) server.serializeAttachment({ role: 'client', clientId: id } satisfies Attachment)
+      const id = room.clientConnected(sock, address)
+      if (id) server.serializeAttachment({ role: 'client', clientId: id, address } satisfies Attachment)
     }
     return new Response(null, { status: 101, webSocket: client })
   }
@@ -118,6 +137,7 @@ export class MachineRoom extends DurableObject<Env> {
     const room = this.ensureRoom()
     const att = ws.deserializeAttachment() as Attachment | null
     if (!room) return
+    await this.hydrate(room)
     const text = typeof message === 'string' ? message : new TextDecoder().decode(message)
     if (!att) return
     if (att.role === 'machine') {

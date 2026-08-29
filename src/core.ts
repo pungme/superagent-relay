@@ -39,13 +39,26 @@ export interface RoomHooks {
   push?(req: Record<string, unknown>): Promise<void>
   now(): number
   log?(line: string): void
+  /** Persist the day's byte count (called at most once per MB relayed). */
+  saveQuota?(q: Quota): void
 }
 
 export const LIMITS = {
   maxFrameBytes: 1_048_576, // 1 MB — a screenshot fits, nothing bigger is expected
   maxClients: 8,
+  /** Phones from one address in one room; keeps a stranger from filling the slots. */
+  clientsPerAddress: 3,
   bytesPerSecond: 2_000_000, // per machine, both directions
+  /** Per machine per UTC day. A day of heavy use is tens of MB; this is a ceiling, not a target. */
+  bytesPerDay: 500_000_000,
   authTimeoutMs: 10_000
+}
+
+/** Bytes a machine has relayed today, as the host persists it across restarts. */
+export interface Quota {
+  /** UTC day as YYYY-MM-DD. */
+  day: string
+  bytes: number
 }
 
 export const CLOSE = {
@@ -54,12 +67,17 @@ export const CLOSE = {
   unauthorized: 4401,
   tooMany: 4429,
   replaced: 4409,
-  protocol: 4400
+  protocol: 4400,
+  /** The machine used its day's byte budget; back tomorrow (UTC). */
+  quota: 4413,
+  /** This relay only serves machines on its allowlist. */
+  forbidden: 4403
 } as const
 
 interface Client {
   id: string
   socket: Socket
+  address?: string
 }
 
 export class Room {
@@ -70,6 +88,8 @@ export class Room {
   // Token bucket for byte rate, per machine.
   private tokens = LIMITS.bytesPerSecond
   private lastRefill: number
+  private quota: Quota = { day: '', bytes: 0 }
+  private savedMb = 0
 
   constructor(
     readonly machineId: string,
@@ -84,6 +104,17 @@ export class Room {
   }
   get clientCount(): number {
     return this.clients.size
+  }
+  /** Today's relayed bytes for this machine (for the host to persist or show). */
+  get usage(): Quota {
+    return { ...this.quota }
+  }
+  /** Restore a persisted count; anything from another day is ignored. */
+  restoreQuota(q: Quota | null | undefined): void {
+    if (q && q.day === utcDay(this.hooks.now())) {
+      this.quota = { ...q }
+      this.savedMb = Math.floor(q.bytes / 1_000_000)
+    }
   }
 
   // --- machine ---------------------------------------------------------------
@@ -104,6 +135,10 @@ export class Room {
   }
 
   async machineFrame(socket: Socket, text: string): Promise<void> {
+    if (this.overDailyBudget(text.length)) {
+      this.closeForQuota()
+      return
+    }
     if (!this.charge(text.length)) return // over budget: drop silently
     if (this.pendingMac && this.pendingMac.socket === socket) {
       await this.finishAuth(text)
@@ -192,8 +227,8 @@ export class Room {
     this.mac = socket
   }
 
-  adoptClient(id: string, socket: Socket): void {
-    this.clients.set(id, { id, socket })
+  adoptClient(id: string, socket: Socket, address?: string): void {
+    this.clients.set(id, { id, socket, address })
     const n = Number(id.slice(1))
     if (Number.isFinite(n) && n >= this.nextClient) this.nextClient = n + 1
   }
@@ -209,7 +244,7 @@ export class Room {
   // --- clients ---------------------------------------------------------------
 
   /** Returns the client id, or null if refused (socket already closed). */
-  clientConnected(socket: Socket): string | null {
+  clientConnected(socket: Socket, address?: string): string | null {
     if (!this.mac) {
       socket.send('{"t":"offline"}')
       socket.close(CLOSE.offline, 'machine offline')
@@ -219,8 +254,16 @@ export class Room {
       socket.close(CLOSE.tooMany, 'too many clients')
       return null
     }
+    if (address) {
+      let same = 0
+      for (const c of this.clients.values()) if (c.address === address) same++
+      if (same >= LIMITS.clientsPerAddress) {
+        socket.close(CLOSE.tooMany, 'too many connections from this address')
+        return null
+      }
+    }
     const id = `c${this.nextClient++}`
-    this.clients.set(id, { id, socket })
+    this.clients.set(id, { id, socket, address })
     this.mac.send(JSON.stringify({ t: 'open', c: id }))
     return id
   }
@@ -231,6 +274,10 @@ export class Room {
       this.clients.get(id)!.socket.close(CLOSE.protocol, 'frame too large')
       this.clients.delete(id)
       this.mac.send(JSON.stringify({ t: 'close', c: id }))
+      return
+    }
+    if (this.overDailyBudget(text.length)) {
+      this.closeForQuota()
       return
     }
     if (!this.charge(text.length)) return
@@ -251,8 +298,55 @@ export class Room {
     this.lastRefill = now
     if (this.tokens < bytes) return false
     this.tokens -= bytes
+    this.quota.bytes += bytes
+    const mb = Math.floor(this.quota.bytes / 1_000_000)
+    if (mb > this.savedMb) {
+      this.savedMb = mb
+      this.hooks.saveQuota?.(this.usage)
+    }
     return true
   }
+
+  /** Rolls the day over first; true if this frame would exceed today's budget. */
+  private overDailyBudget(bytes: number): boolean {
+    const day = utcDay(this.hooks.now())
+    if (this.quota.day !== day) {
+      this.quota = { day, bytes: 0 }
+      this.savedMb = 0
+    }
+    return this.quota.bytes + bytes > LIMITS.bytesPerDay
+  }
+
+  /** Everyone is told the same thing; the Mac's reconnects fail the same way until tomorrow. */
+  private closeForQuota(): void {
+    const reason = 'daily byte budget used up; back tomorrow (UTC)'
+    this.hooks.log?.(`${this.machineId.slice(0, 8)} ${reason}`)
+    for (const c of this.clients.values()) c.socket.close(CLOSE.quota, reason)
+    this.clients.clear()
+    this.mac?.close(CLOSE.quota, reason)
+    this.mac = null
+    this.pendingMac?.socket.close(CLOSE.quota, reason)
+    this.pendingMac = null
+  }
+}
+
+/** YYYY-MM-DD in UTC. */
+export function utcDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10)
+}
+
+/**
+ * Whether a machine may use this relay. `list` is the RELAY_ALLOWED_MACHINES
+ * setting: empty means open to all, otherwise comma/space-separated machine
+ * ids (a prefix of at least 8 hex characters is enough to name one).
+ */
+export function isAllowed(machineId: string, list: string | undefined | null): boolean {
+  const entries = (list ?? '')
+    .split(/[\s,]+/)
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.length >= 8)
+  if (!entries.length) return true
+  return entries.some((e) => machineId.startsWith(e))
 }
 
 // --- helpers ---------------------------------------------------------------

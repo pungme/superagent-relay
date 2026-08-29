@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { generateKeyPairSync, sign, createPublicKey, verify as edVerify, randomBytes } from 'node:crypto'
-import { Room, b64, unb64, route, machineIdToKey, CLOSE, LIMITS, type Socket } from '../src/core.js'
+import { Room, b64, unb64, route, machineIdToKey, isAllowed, utcDay, CLOSE, LIMITS, type Socket } from '../src/core.js'
 
 class FakeSocket implements Socket {
   sent: string[] = []
@@ -176,5 +176,65 @@ describe('helpers', () => {
   it('round-trips base64', () => {
     const bytes = new Uint8Array(randomBytes(40))
     expect(unb64(b64(bytes))).toEqual(bytes)
+  })
+
+  it('caps phones per address inside a room', async () => {
+    const { room } = await authedRoom()
+    const ok = Array.from({ length: LIMITS.clientsPerAddress }, () => new FakeSocket())
+    for (const s of ok) expect(room.clientConnected(s, '203.0.113.9')).not.toBeNull()
+    const extra = new FakeSocket()
+    expect(room.clientConnected(extra, '203.0.113.9')).toBeNull()
+    expect(extra.closed?.code).toBe(CLOSE.tooMany)
+    // A different address still gets in.
+    expect(room.clientConnected(new FakeSocket(), '198.51.100.4')).not.toBeNull()
+  })
+
+  it('closes everyone when the day\'s byte budget is used up, and resets at midnight UTC', async () => {
+    const { room, mac } = await authedRoom()
+    const phone = new FakeSocket()
+    const id = room.clientConnected(phone, '203.0.113.9')!
+    // Pretend most of the day's budget is already spent (as a host would restore it).
+    room.restoreQuota({ day: utcDay(now), bytes: LIMITS.bytesPerDay - 10 })
+    room.clientFrame(id, 'x'.repeat(5))
+    expect(mac.last()).toMatchObject({ t: 'msg', c: id })
+    room.clientFrame(id, 'x'.repeat(20))
+    expect(phone.closed?.code).toBe(CLOSE.quota)
+    expect(mac.closed?.code).toBe(CLOSE.quota)
+    expect(room.hasMachine).toBe(false)
+    // Next day: the count starts over.
+    now += 24 * 3600 * 1000
+    const { room: fresh, mac: mac2 } = await authedRoom()
+    fresh.restoreQuota({ day: utcDay(now - 24 * 3600 * 1000), bytes: LIMITS.bytesPerDay })
+    const p2 = new FakeSocket()
+    const id2 = fresh.clientConnected(p2)!
+    fresh.clientFrame(id2, 'hello')
+    expect(mac2.last()).toMatchObject({ t: 'msg', c: id2, d: 'hello' })
+  })
+
+  it('persists the day\'s count once per MB', async () => {
+    const saved: unknown[] = []
+    const room = new Room(machineId, machineIdToKey(machineId)!, { ...hooks, saveQuota: (q) => saved.push(q) })
+    const mac = new FakeSocket()
+    room.machineConnected(mac)
+    const nonce = unb64(mac.last().nonce as string)
+    const sig = sign(null, Buffer.from(nonce), privateKey)
+    await room.machineFrame(mac, JSON.stringify({ t: 'auth', sig: b64(new Uint8Array(sig)) }))
+    const phone = new FakeSocket()
+    const id = room.clientConnected(phone)!
+    for (let i = 0; i < 3; i++) {
+      now += 1000
+      room.clientFrame(id, 'x'.repeat(700_000))
+    }
+    expect(saved.length).toBe(2) // crossed 1 MB and 2 MB
+    expect(room.usage.bytes).toBeGreaterThan(2_000_000)
+  })
+
+  it('reads an allowlist as open when empty, by prefix otherwise', () => {
+    expect(isAllowed(machineId, undefined)).toBe(true)
+    expect(isAllowed(machineId, '  ')).toBe(true)
+    expect(isAllowed(machineId, machineId.slice(0, 12))).toBe(true)
+    expect(isAllowed(machineId, `deadbeef00, ${machineId}`)).toBe(true)
+    expect(isAllowed(machineId, 'deadbeef00')).toBe(false)
+    expect(isAllowed(machineId, 'abc')).toBe(true) // too short to name anyone: ignored
   })
 })

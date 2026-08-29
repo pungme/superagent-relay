@@ -36,6 +36,35 @@ npm run worker:deploy
 
 One Durable Object per Mac, hibernating when idle.
 
+## Limits, abuse, and the default relay
+
+The relay the desktop app points at by default (`wss://superagent-relay.superagent-relay.workers.dev`)
+is run by the project on Cloudflare's free tier, best-effort. It is fine for personal use; if you
+depend on it, run your own — it is one `wrangler deploy` and one URL in Settings → Phone.
+
+Every room is capped so one machine can't crowd out the others (numbers in `src/core.ts` `LIMITS`):
+
+| limit | value | what happens |
+|---|---|---|
+| frame size | 1 MiB | the sender is closed (`4400`) — Cloudflare's WebSocket message ceiling |
+| phones per machine | 8 | extra phones are refused (`4429`) |
+| phones per address per machine | 3 | keeps a stranger who learned a machine id from filling the slots (`4429`) |
+| bytes per second per machine | 2 MB/s | frames over the rate are dropped |
+| bytes per UTC day per machine | 500 MB | everyone in the room is closed with `4413`; the machine is back after midnight UTC |
+
+The daily count survives Durable Object eviction (persisted once per MB).
+
+To make a deployment private, set an allowlist — comma-separated machine ids (the hex shown under
+*Machine id* in Settings → Phone; a prefix of 8+ characters is enough):
+
+```sh
+npx wrangler secret put RELAY_ALLOWED_MACHINES     # Cloudflare
+RELAY_ALLOWED_MACHINES=2642b2caf479 npx tsx src/node.ts   # Node
+```
+
+Machines not on the list get HTTP 403 at connect. The relay never holds a key that could read a
+frame: an attacker with the URL and a machine id can occupy slots or spend budget, not read or forge.
+
 ## How it works
 
 - Mac connects to `wss://relay/m/<machineId>` and proves it owns the id by signing a nonce
