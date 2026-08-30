@@ -15,6 +15,8 @@ export interface Env {
   APNS_BUNDLE_ID?: string
   /** Optional: only these machine ids (or ≥8-char prefixes) may use this relay. */
   RELAY_ALLOWED_MACHINES?: string
+  /** Lets `POST /admin/quota/<machineId>` clear today's byte count. */
+  RELAY_ADMIN_TOKEN?: string
 }
 
 export default {
@@ -22,6 +24,18 @@ export default {
     const url = new URL(request.url)
     if (url.pathname === '/healthz') {
       return Response.json({ ok: true, push: !!readPushConfig(env as unknown as Record<string, string | undefined>) })
+    }
+    // Clear a machine's daily byte count. Guarded by a secret, because anyone
+    // who could call it freely could also erase the guardrail. Exists so a
+    // budget spent by a bug is recoverable before midnight UTC.
+    if (url.pathname.startsWith('/admin/quota/')) {
+      const token = request.headers.get('x-admin-token') ?? ''
+      const want = env.RELAY_ADMIN_TOKEN ?? ''
+      if (!want || token !== want) return new Response('unauthorized', { status: 401 })
+      const machineId = url.pathname.slice('/admin/quota/'.length)
+      if (!/^[0-9a-f]{64}$/.test(machineId)) return new Response('bad machine id', { status: 400 })
+      const room = env.ROOMS.get(env.ROOMS.idFromName(machineId))
+      return room.fetch(new Request('https://relay.internal/reset-quota', { method: 'POST' }))
     }
     const target = route(url.pathname)
     if (!target) return new Response('not found', { status: 404 })
@@ -110,6 +124,12 @@ export class MachineRoom extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === '/reset-quota') {
+      await this.ctx.storage.delete('quota')
+      this.quotaLoaded = true
+      this.room?.clearQuota()
+      return Response.json({ ok: true, cleared: true })
+    }
     const target = route(new URL(request.url).pathname)
     if (!target) return new Response('not found', { status: 404 })
     const room = this.ensureRoom(target.machineId)

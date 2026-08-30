@@ -110,6 +110,16 @@ export class Room {
     return { ...this.quota }
   }
   /** Restore a persisted count; anything from another day is ignored. */
+  /**
+   * Forget today's byte count. The budget is a guardrail against a runaway
+   * client, not a bill — when the runaway has been fixed there has to be a way
+   * back in before midnight UTC.
+   */
+  clearQuota(): void {
+    this.quota = { day: utcDay(this.hooks.now()), bytes: 0 }
+    this.savedMb = 0
+  }
+
   restoreQuota(q: Quota | null | undefined): void {
     if (q && q.day === utcDay(this.hooks.now())) {
       this.quota = { ...q }
