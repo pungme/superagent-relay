@@ -11,8 +11,13 @@ class FakeSocket implements Socket {
   close(code: number, reason: string): void {
     this.closed = { code, reason }
   }
+  /** Everything but the room's own usage bookkeeping, which can arrive at any time. */
+  get traffic(): string[] {
+    return this.sent.filter((t) => !t.includes('"t":"usage"'))
+  }
   last(): Record<string, unknown> {
-    return JSON.parse(this.sent[this.sent.length - 1])
+    const t = this.traffic
+    return JSON.parse(t[t.length - 1])
   }
 }
 
@@ -95,7 +100,7 @@ describe('Room', () => {
     expect(mac.last()).toEqual({ t: 'msg', c: id, d: 'CIPHERTEXT-1' })
 
     await room.machineFrame(mac, JSON.stringify({ t: 'msg', c: id, d: 'CIPHERTEXT-2' }))
-    expect(phone.sent).toEqual(['CIPHERTEXT-2'])
+    expect(phone.traffic).toEqual(['CIPHERTEXT-2'])
 
     room.clientClosed(id)
     expect(mac.last()).toEqual({ t: 'close', c: id })
