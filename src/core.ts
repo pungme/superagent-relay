@@ -275,6 +275,7 @@ export class Room {
     const id = `c${this.nextClient++}`
     this.clients.set(id, { id, socket, address })
     this.mac.send(JSON.stringify({ t: 'open', c: id }))
+    this.announceUsage()
     return id
   }
 
@@ -301,6 +302,22 @@ export class Room {
 
   // --- limits ----------------------------------------------------------------
 
+  /**
+   * What today has cost, to whoever is connected. Sent once per megabyte and
+   * when someone joins, so a phone and a Mac can both show it before the
+   * budget runs out rather than discovering it as an outage.
+   */
+  private announceUsage(): void {
+    const frame = JSON.stringify({
+      t: 'usage',
+      day: this.quota.day,
+      bytes: this.quota.bytes,
+      limit: LIMITS.bytesPerDay
+    })
+    this.mac?.send(frame)
+    for (const c of this.clients.values()) c.socket.send(frame)
+  }
+
   private charge(bytes: number): boolean {
     const now = this.hooks.now()
     const elapsed = Math.max(0, now - this.lastRefill) / 1000
@@ -313,6 +330,7 @@ export class Room {
     if (mb > this.savedMb) {
       this.savedMb = mb
       this.hooks.saveQuota?.(this.usage)
+      this.announceUsage()
     }
     return true
   }
