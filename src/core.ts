@@ -48,6 +48,16 @@ export const LIMITS = {
   maxClients: 8,
   /** Phones from one address in one room; keeps a stranger from filling the slots. */
   clientsPerAddress: 3,
+  /**
+   * A client is dead if it has not been heard from in this long.
+   *
+   * Phones ping every 25s, so a live one is never quiet for more than that. A
+   * socket that dies without a close frame — the phone loses signal, changes
+   * network, is put in a pocket — leaves an entry nothing ever removes, and
+   * three of those from one address silently locked the real phone out with
+   * "too many connections from this address". Four missed pings is dead.
+   */
+  clientStaleMs: 100_000,
   bytesPerSecond: 2_000_000, // per machine, both directions
   /** Per machine per UTC day. A day of heavy use is tens of MB; this is a ceiling, not a target. */
   bytesPerDay: 500_000_000,
@@ -78,6 +88,8 @@ interface Client {
   id: string
   socket: Socket
   address?: string
+  /** When a frame last arrived from this client. See LIMITS.clientStaleMs. */
+  lastSeen: number
 }
 
 export class Room {
@@ -238,7 +250,10 @@ export class Room {
   }
 
   adoptClient(id: string, socket: Socket, address?: string): void {
-    this.clients.set(id, { id, socket, address })
+    // Fresh, not stale: waking from hibernation says nothing about whether this
+    // phone is still there, and reaping the whole room on wake would be worse
+    // than the leak. Its next ping — 25s at most — settles it either way.
+    this.clients.set(id, { id, socket, address, lastSeen: this.hooks.now() })
     const n = Number(id.slice(1))
     if (Number.isFinite(n) && n >= this.nextClient) this.nextClient = n + 1
   }
@@ -260,6 +275,8 @@ export class Room {
       socket.close(CLOSE.offline, 'machine offline')
       return null
     }
+    // Before any cap is enforced: a cap that counts dead entries is a lockout.
+    this.sweepStaleClients()
     if (this.clients.size >= LIMITS.maxClients) {
       socket.close(CLOSE.tooMany, 'too many clients')
       return null
@@ -273,7 +290,7 @@ export class Room {
       }
     }
     const id = `c${this.nextClient++}`
-    this.clients.set(id, { id, socket, address })
+    this.clients.set(id, { id, socket, address, lastSeen: this.hooks.now() })
     this.mac.send(JSON.stringify({ t: 'open', c: id }))
     this.announceUsage()
     return id
@@ -281,6 +298,7 @@ export class Room {
 
   clientFrame(id: string, text: string): void {
     if (!this.mac || !this.clients.has(id)) return
+    this.clients.get(id)!.lastSeen = this.hooks.now()
     if (text.length > LIMITS.maxFrameBytes) {
       this.clients.get(id)!.socket.close(CLOSE.protocol, 'frame too large')
       this.clients.delete(id)
@@ -293,6 +311,30 @@ export class Room {
     }
     if (!this.charge(text.length)) return
     this.mac.send(JSON.stringify({ t: 'msg', c: id, d: text }))
+  }
+
+  /**
+   * Drop clients that have gone quiet.
+   *
+   * Nothing else ever removed them. A phone that vanishes without a close frame
+   * left an entry in this map for the lifetime of the room, and the only thing
+   * that cleared them was the Mac's own socket dropping — which is why "wake the
+   * Mac up and it works again" was the reliable cure for a Mac that had never
+   * been asleep.
+   */
+  private sweepStaleClients(): void {
+    const cutoff = this.hooks.now() - LIMITS.clientStaleMs
+    for (const c of [...this.clients.values()]) {
+      if (c.lastSeen > cutoff) continue
+      this.clients.delete(c.id)
+      this.hooks.log?.(`${this.machineId.slice(0, 8)} dropped silent client ${c.id}`)
+      try {
+        c.socket.close(CLOSE.machineGone, 'no keepalive')
+      } catch {
+        // Already gone: the entry was the only thing left of it.
+      }
+      this.mac?.send(JSON.stringify({ t: 'close', c: c.id }))
+    }
   }
 
   clientClosed(id: string): void {

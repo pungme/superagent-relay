@@ -194,6 +194,56 @@ describe('helpers', () => {
     expect(room.clientConnected(new FakeSocket(), '198.51.100.4')).not.toBeNull()
   })
 
+  /**
+   * The lockout this was reported as: "my phone cannot reach the Mac", from a
+   * Mac that was awake the whole time and had never slept.
+   *
+   * A phone that vanishes without a close frame — lost signal, changed network,
+   * went in a pocket — left an entry nothing removed. Three of those from one
+   * address filled clientsPerAddress, and the real phone was refused. The only
+   * thing that had ever cleared them was the Mac's own socket dropping, which is
+   * why waking the Mac "fixed" it and why the cause looked like sleep.
+   */
+  it('does not let phones that went quiet lock out the one that is really there', async () => {
+    const { room } = await authedRoom()
+    const ghosts = Array.from({ length: LIMITS.clientsPerAddress }, () => new FakeSocket())
+    for (const s of ghosts) expect(room.clientConnected(s, '203.0.113.9')).not.toBeNull()
+
+    // Before: full, and a fourth is refused.
+    expect(room.clientConnected(new FakeSocket(), '203.0.113.9')).toBeNull()
+
+    // They stop pinging. Four missed keepalives later they are not there.
+    now += LIMITS.clientStaleMs + 1
+    const real = new FakeSocket()
+    expect(room.clientConnected(real, '203.0.113.9')).not.toBeNull()
+    expect(real.closed).toBeNull()
+    for (const g of ghosts) expect(g.closed?.code).toBe(CLOSE.machineGone)
+  })
+
+  it('keeps a phone that is still pinging, however long it has been connected', async () => {
+    const { room } = await authedRoom()
+    const phone = new FakeSocket()
+    const id = room.clientConnected(phone, '203.0.113.9')!
+    // Well past the staleness window, but it keeps saying hello.
+    for (let i = 0; i < 10; i++) {
+      now += LIMITS.clientStaleMs / 2
+      room.clientFrame(id, '{"t":"ping"}')
+    }
+    now += LIMITS.clientStaleMs / 2
+    room.clientConnected(new FakeSocket(), '198.51.100.4')
+    expect(phone.closed).toBeNull()
+  })
+
+  /** The Mac has to learn the phone is gone, or it keeps a session open for it. */
+  it('tells the Mac about each client it reaps', async () => {
+    const { room, mac } = await authedRoom()
+    const ghost = new FakeSocket()
+    const id = room.clientConnected(ghost, '203.0.113.9')!
+    now += LIMITS.clientStaleMs + 1
+    room.clientConnected(new FakeSocket(), '198.51.100.4')
+    expect(mac.traffic).toContain(JSON.stringify({ t: 'close', c: id }))
+  })
+
   it('closes everyone when the day\'s byte budget is used up, and resets at midnight UTC', async () => {
     const { room, mac } = await authedRoom()
     const phone = new FakeSocket()
