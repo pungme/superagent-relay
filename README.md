@@ -9,6 +9,9 @@ asks it to.
 Superagent ships with a default relay baked in (`wss://superagent-relay.superagent-relay.workers.dev`, this code on Cloudflare). Run your own if you'd rather; it's one URL to change
 on the Mac (Settings → Phone) and the phone picks it up from the pairing QR.
 
+Three repositories: [desktop](https://github.com/pungme/superagent-desktop) ·
+[iOS](https://github.com/pungme/superagent-ios) · **relay** (this one).
+
 ## Self-host
 
 ```sh
