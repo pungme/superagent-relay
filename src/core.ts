@@ -59,8 +59,13 @@ export const LIMITS = {
    */
   clientStaleMs: 100_000,
   bytesPerSecond: 2_000_000, // per machine, both directions
-  /** Per machine per UTC day. A day of heavy use is tens of MB; this is a ceiling, not a target. */
-  bytesPerDay: 500_000_000,
+  /**
+   * Per machine per UTC day. Raised to 1 GB as a stopgap while a mirror that
+   * streams too hard is fixed on the phone — normal use is tens of MB; the
+   * ceiling exists to stop a runaway, not to bill. Bring it back down once the
+   * mirror only streams when foreground and frames are capped small.
+   */
+  bytesPerDay: 1_000_000_000,
   authTimeoutMs: 10_000
 }
 
