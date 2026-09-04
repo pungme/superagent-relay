@@ -69,6 +69,10 @@ export interface Quota {
   /** UTC day as YYYY-MM-DD. */
   day: string
   bytes: number
+  /** Machine → phones bytes (mirrors, transcripts, files). Optional: old saves lack it. */
+  m2p?: number
+  /** Phones → machine bytes (messages, taps, uploads). */
+  p2m?: number
 }
 
 export const CLOSE = {
@@ -102,6 +106,8 @@ export class Room {
   private lastRefill: number
   private quota: Quota = { day: '', bytes: 0 }
   private savedMb = 0
+  /** The UTC day the machine was kicked for spending its budget, if any. */
+  private quotaLockedDay = ''
 
   constructor(
     readonly machineId: string,
@@ -128,7 +134,7 @@ export class Room {
    * back in before midnight UTC.
    */
   clearQuota(): void {
-    this.quota = { day: utcDay(this.hooks.now()), bytes: 0 }
+    this.quota = { day: utcDay(this.hooks.now()), bytes: 0, m2p: 0, p2m: 0 }
     this.savedMb = 0
   }
 
@@ -161,7 +167,7 @@ export class Room {
       this.closeForQuota()
       return
     }
-    if (!this.charge(text.length)) return // over budget: drop silently
+    if (!this.charge(text.length, 'm2p')) return // over budget: drop silently
     if (this.pendingMac && this.pendingMac.socket === socket) {
       await this.finishAuth(text)
       return
@@ -271,6 +277,14 @@ export class Room {
   /** Returns the client id, or null if refused (socket already closed). */
   clientConnected(socket: Socket, address?: string): string | null {
     if (!this.mac) {
+      // If the machine is absent because it used today's budget, say so — a
+      // phone shown a generic "offline" reads it as "Mac asleep" and the
+      // person walks over to wake a Mac that is wide awake and locked out.
+      if (this.quotaLockedDay === utcDay(this.hooks.now())) {
+        socket.send('{"t":"offline","reason":"quota"}')
+        socket.close(CLOSE.quota, 'daily byte budget used up; back tomorrow (UTC)')
+        return null
+      }
       socket.send('{"t":"offline"}')
       socket.close(CLOSE.offline, 'machine offline')
       return null
@@ -309,7 +323,7 @@ export class Room {
       this.closeForQuota()
       return
     }
-    if (!this.charge(text.length)) return
+    if (!this.charge(text.length, 'p2m')) return
     this.mac.send(JSON.stringify({ t: 'msg', c: id, d: text }))
   }
 
@@ -360,7 +374,7 @@ export class Room {
     for (const c of this.clients.values()) c.socket.send(frame)
   }
 
-  private charge(bytes: number): boolean {
+  private charge(bytes: number, dir: 'm2p' | 'p2m'): boolean {
     const now = this.hooks.now()
     const elapsed = Math.max(0, now - this.lastRefill) / 1000
     this.tokens = Math.min(LIMITS.bytesPerSecond, this.tokens + elapsed * LIMITS.bytesPerSecond)
@@ -368,6 +382,9 @@ export class Room {
     if (this.tokens < bytes) return false
     this.tokens -= bytes
     this.quota.bytes += bytes
+    // Split by direction, so "how did we burn 50MB overnight?" has an answer:
+    // a fat m2p day is mirrors/transcripts going OUT, a fat p2m day is coming IN.
+    this.quota[dir] = (this.quota[dir] ?? 0) + bytes
     const mb = Math.floor(this.quota.bytes / 1_000_000)
     if (mb > this.savedMb) {
       this.savedMb = mb
@@ -389,6 +406,7 @@ export class Room {
 
   /** Everyone is told the same thing; the Mac's reconnects fail the same way until tomorrow. */
   private closeForQuota(): void {
+    this.quotaLockedDay = utcDay(this.hooks.now())
     const reason = 'daily byte budget used up; back tomorrow (UTC)'
     this.hooks.log?.(`${this.machineId.slice(0, 8)} ${reason}`)
     for (const c of this.clients.values()) c.socket.close(CLOSE.quota, reason)

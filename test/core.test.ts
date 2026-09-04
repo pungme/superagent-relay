@@ -82,6 +82,28 @@ describe('Room', () => {
     expect(late.closed?.code).toBe(CLOSE.unauthorized)
   })
 
+  it('tells a quota-locked machine\'s phone WHY, not a bare offline', async () => {
+    const { room, mac } = await authedRoom()
+    room.restoreQuota({ day: utcDay(now), bytes: LIMITS.bytesPerDay - 1 })
+    await room.machineFrame(mac, 'x'.repeat(10)) // trips the budget, machine kicked
+    expect(room.hasMachine).toBe(false)
+    const phone = new FakeSocket()
+    expect(room.clientConnected(phone)).toBeNull()
+    expect(phone.sent).toEqual(['{"t":"offline","reason":"quota"}'])
+    expect(phone.closed?.code).toBe(CLOSE.quota)
+  })
+
+  it('splits the day\'s bytes by direction', async () => {
+    const { room, mac } = await authedRoom()
+    const phone = new FakeSocket()
+    const id = room.clientConnected(phone, '203.0.113.9')!
+    await room.machineFrame(mac, JSON.stringify({ t: 'msg', c: id, d: 'to the phone' }))
+    room.clientFrame(id, 'to the mac')
+    expect(room.usage.m2p).toBeGreaterThan(0)
+    expect(room.usage.p2m).toBe('to the mac'.length)
+    expect(room.usage.bytes).toBe((room.usage.m2p ?? 0) + (room.usage.p2m ?? 0))
+  })
+
   it('refuses phones while the machine is offline', () => {
     const room = new Room(machineId, machineIdToKey(machineId)!, hooks)
     const phone = new FakeSocket()
