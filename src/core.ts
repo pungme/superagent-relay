@@ -65,7 +65,7 @@ export const LIMITS = {
    * ceiling exists to stop a runaway, not to bill. Bring it back down once the
    * mirror only streams when foreground and frames are capped small.
    */
-  bytesPerDay: 1_000_000_000,
+  bytesPerDay: 10_000_000_000,
   authTimeoutMs: 10_000
 }
 
